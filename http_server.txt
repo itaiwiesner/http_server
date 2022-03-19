@@ -1,0 +1,212 @@
+import socket
+import os
+import math
+# constants
+IP = '127.0.0.1'
+PORT = 9009
+DEFAULT_URL = '/index.html'
+NOT_FOUND_URL = '/notfound.html'
+VALID_METHODS = 'GET', 'POST'
+SOCKET_TIMEOUT = 30
+EMPTY_URL = '/empty.html'
+REDIRECTION_DICTIONARY = {NOT_FOUND_URL: DEFAULT_URL, EMPTY_URL: DEFAULT_URL, '/': DEFAULT_URL}
+VERSION = 'HTTP/1.1'
+OK = "200 OK"
+REDIRECTED = "302 Found"
+NOT_FOUND = '404 Not Found'
+INVALID_PARAMS = '500 Internal Server Error'
+ROOT_DIR = 'D:\\networks\\4.4\\webroot\\'
+CONTENT_TYPE = {"html": "text/html; charset=UTF-8", "text": "text/html; charset=UTF-8", "jpg": "image/jpg",
+                "js": "text/javascript; charset=UTF-8", "css": "text/css", "ico": "ico", "png": "image/png",
+                "jpeg": "image/jpeg", "gif": "gif"}
+UPLOAD_DIR = ROOT_DIR + 'uploads\\'
+
+
+def is_number(num):
+    """
+    gets a string and checks if it represents an integer number
+    """
+    try:
+        int(num)
+    except ValueError:
+        return False
+    else:
+        return True
+
+
+def get_params(resource):
+    """
+    checks whether the request includes valid params in it. For example, if resource is: '/calculate-next?num=2',
+    the output will be: True, '/calculate-next', '22'
+    """
+    params = resource.split('?')[-1]
+    resource = resource.split('?')[0]
+
+    if resource == '/calculate-next':
+        param = params.split('=')[0]
+        value = params.split('=')[-1]
+        if param == 'num' and is_number(value):
+            return True, resource, [value]
+
+    elif resource == '/calculate-area':
+        first_param = params.split('&')[0]
+        second_param = params.split('&')[-1]
+
+        height_param, height_value = first_param.split('=')[0], first_param.split('=')[-1]
+        width_param, width_value = second_param.split('=')[0], second_param.split('=')[-1]
+
+        if (height_param == 'height' and width_param == 'width') and (is_number(height_value) and is_number(width_value)):
+            return True, resource, [height_value, width_value]
+
+    elif resource == '/upload':
+        param = params.split('=')[0]
+        value = params.split('=')[-1]
+        if param == 'file-name':
+            return True, resource, [value]
+
+    elif resource == '/image':
+        param = params.split('=')[0]
+        value = params.split('=')[-1]
+        if param == 'image-name' and os.path.isfile(UPLOAD_DIR + value):
+            return True, resource, [value]
+
+    return False, resource, []
+
+
+def create_header(file_name, file_type, status_code):
+    return f"{VERSION} {status_code}\r\n " \
+           f"Content-Length: {os.path.getsize(file_name)}\r\n " \
+           f"Content-Type: {CONTENT_TYPE[file_type]}\r\n\r\n".encode()
+
+
+def create_data(file_name, file_type, resource, params):
+    """
+    Get data from file
+    return binary
+    """
+    img_endings = ('png', 'jpg', 'jpeg', 'gif', 'ico')
+    if file_type in img_endings:
+        with open(file_name, 'rb') as f:
+            data = f.read()
+    else:
+        with open(file_name, encoding='UTF-8') as f:
+            data = f.readlines()
+            if file_name == ROOT_DIR + EMPTY_URL:
+                if resource == '/calculate-next':
+                    data[9] = f'{params[0]} + 1 = {int(params[0]) + 1}'
+                if resource == '/calculate-area':
+                    data[9] = f'({params[0]} * {params[1]}) / 2 = {(int(params[0]) * int(params[1])) / 2}'
+                if resource == '/upload':
+                    data[9] = f'{params[0]}'
+            data = ''.join(data).encode()
+
+    return data
+
+
+def handle_upload_image(file_name, content_length):
+    """
+    Gets a file_name and its size. Checks if the file is an image and handles it accordingly
+    """
+    counter = math.ceil(content_length / 10000)
+    if file_name.lower().endswith(('.png', '.jpg', 'gif', '.jpeg', '.ico')):
+        save_loc = UPLOAD_DIR + file_name
+        with open(save_loc, 'wb') as f:
+            # save the image in the right directory
+            for _ in range(counter):
+                x = client_socket.recv(10000)
+                f.write(x)
+            return OK, ['Received successfully']
+
+    # clean the socket if the file sent isn't an image
+    for _ in range(counter):
+        client_socket.recv(10000)
+    return OK, ['Not an image']
+
+
+def handle_client_request(method, resource, client_socket):
+    """ Check the required resource, generate proper HTTP response and send to client"""
+    status_code = OK
+    msg = []
+    url = resource[0]
+
+    if resource[0] in REDIRECTION_DICTIONARY:
+        status_code = REDIRECTED
+        file_name = ROOT_DIR + REDIRECTION_DICTIONARY[resource[0]]
+
+    elif resource[0] == '/index.html':
+        file_name = ROOT_DIR + DEFAULT_URL
+
+    else:
+        valid_params, url, params = get_params(resource[0])
+        if valid_params:
+            file_name = ROOT_DIR + EMPTY_URL
+
+            if url == '/upload' and method == 'POST':
+                status_code, msg = handle_upload_image(params[0], resource[1])
+
+            elif url == '/image':
+                if os.path.isfile(UPLOAD_DIR + params[0]):
+                    file_name = UPLOAD_DIR + params[0]
+                    print(file_name)
+
+            else:
+                msg = params
+
+        else:
+            file_name = ROOT_DIR + NOT_FOUND_URL
+            status_code = NOT_FOUND
+
+    file_type = file_name.split('.')[-1]
+    if file_type in CONTENT_TYPE:
+        http_header = create_header(file_name, file_type, status_code)
+        http_data = create_data(file_name, file_type, url, msg)
+        client_socket.send(http_header + http_data)
+
+
+def validate_http_request(request):
+    """ Check if request is a valid HTTP request and returns TRUE / FALSE and the requested URL """
+    request.replace('/', '\\')
+    request = request.split('\r\n')
+    header = request[0].split()
+
+    method = header[0]
+    version = header[-1]
+    if method in VALID_METHODS and version == VERSION:
+        if method == 'GET':
+            return True, method, [header[1]]
+        if method == 'POST':
+            content_length = int([x.split()[1] for x in request if x != '' if x.split()[0] == 'Content-Length:'][0])
+            return True, method, [header[1], content_length]
+    return False, '', []
+
+
+def handle_client(client_socket):
+    """ Handles client requests: verifies client's requests are legal HTTP, calls function to handle the requests """
+    print('Client connected')
+    client_request = client_socket.recv(100000).decode()
+    valid_http, method, resource = validate_http_request(client_request)
+    if valid_http:
+        print('Got a valid HTTP request')
+        handle_client_request(method, resource, client_socket)
+    else:
+        print('Error: Not a valid HTTP request')
+        print('Closing connection')
+    client_socket.close()
+
+
+def main():
+    # Open a socket and loop forever while waiting for clients
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.bind((IP, PORT))
+    server_socket.listen(10)
+    print(f"Listening for connections on port {PORT}")
+
+    while True:
+        client_socket, client_address = server_socket.accept()
+        print('New connection received')
+        client_socket.settimeout(SOCKET_TIMEOUT)
+        handle_client(client_socket)
+
+
+if __name__ == '__main__':
+    main()
